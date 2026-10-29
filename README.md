@@ -67,11 +67,11 @@ run once. Count `"step":"export"` lines in the log to see the retry.
 ## Deploy
 
 ```sh
-wrangler login
-wrangler queues create room-events
-wrangler queues create room-events-dlq
-wrangler r2 bucket create rooms-archives
-wrangler secret put CHAOS_TOKEN
+npx wrangler login
+npx wrangler queues create room-events
+npx wrangler queues create room-events-dlq
+npx wrangler r2 bucket create rooms-archives
+npx wrangler secret put CHAOS_TOKEN
 npm run deploy
 npm run tail            # live invocation stream; keep open during drills
 ```
