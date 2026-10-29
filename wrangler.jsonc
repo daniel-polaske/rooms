@@ -38,7 +38,16 @@
     { "name": "rooms-archive", "binding": "ARCHIVE", "class_name": "ArchiveWorkflow" }
   ],
 
-  // Stage 2: shared secret for /chaos. Set with `wrangler secret put CHAOS_TOKEN`.
-  // For local dev put CHAOS_TOKEN=dev in .dev.vars (gitignored).
-  "vars": {}
+  // Stage 3: archives land here as JSON. Free plan: 10 GB, 1M writes/month.
+  "r2_buckets": [{ "binding": "ARCHIVES", "bucket_name": "rooms-archives" }],
+
+  // CHAOS_TOKEN: shared secret for /chaos and /archive. `wrangler secret put CHAOS_TOKEN`
+  // for production; CHAOS_TOKEN=dev in .dev.vars (gitignored) for local.
+  "vars": {
+    // How long a room sits idle before its alarm archives it. 24 h in production;
+    // override locally (.dev.vars) to something like 15000 to drill the alarm path.
+    "IDLE_MS": "86400000",
+    // How long the Workflow waits before marking the room archived.
+    "ARCHIVE_GRACE": "1 hour"
+  }
 }

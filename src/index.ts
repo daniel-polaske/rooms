@@ -12,6 +12,9 @@
  *   POST /api/rooms/:name/messages          {msg_id?, author, body}
  *   GET  /api/rooms/:name/ws?author=X       WebSocket
  *   POST /api/rooms/:name/chaos?mode=M      fault injection (X-Chaos-Token)
+ *   POST /api/rooms/:name/archive           start the archive Workflow now (X-Chaos-Token)
+ *   GET  /api/archives/:instanceId          Workflow status + output
+ *   GET  /api/archives/:instanceId/body     the archived JSON from R2
  *   GET  /api/directory                     directory status
  */
 
@@ -89,6 +92,20 @@ async function route(request: Request, env: Env, url: URL, trace: ReturnType<typ
     return json(await env.DIRECTORY.getByName("main").status());
   }
 
+  if (parts[1] === "archives" && parts[2] && request.method === "GET") {
+    const inst = await env.ARCHIVE.get(parts[2]).catch(() => null);
+    if (!inst) return json({ error: "no such instance" }, 404);
+    const st = await inst.status();
+    if (parts[3] === "body") {
+      const key = (st.output as { key?: string } | undefined)?.key;
+      if (!key) return json({ status: st.status, error: "no output yet" }, 409);
+      const obj = await env.ARCHIVES.get(key);
+      if (!obj) return json({ error: "object missing", key }, 404);
+      return new Response(obj.body, { headers: { "content-type": "application/json", etag: obj.etag } });
+    }
+    return json({ id: parts[2], ...st });
+  }
+
   if (parts[1] !== "rooms") return json({ error: "not found" }, 404);
 
   if (parts.length === 2 && request.method === "GET") {
@@ -129,6 +146,14 @@ async function route(request: Request, env: Env, url: URL, trace: ReturnType<typ
     // this wrapper will double-post: that is the Stage 2 lesson.
     const r = await withRetry(() => room.post(msgId, body.author ?? "anon", body.body!, childSpan(trace)));
     return json({ ...r, msg_id: msgId }, r.duplicate ? 200 : 201);
+  }
+
+  if (sub === "archive" && request.method === "POST") {
+    const token = request.headers.get("x-chaos-token");
+    if (!env.CHAOS_TOKEN || token !== env.CHAOS_TOKEN) return json({ error: "forbidden" }, 403);
+    await room.setName(name);
+    const id = await room.startArchive("manual");
+    return json({ instance: id, status_url: `/api/archives/${id}` }, 202);
   }
 
   if (sub === "chaos" && request.method === "POST") {

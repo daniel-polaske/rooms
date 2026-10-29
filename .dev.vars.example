@@ -1,2 +1,5 @@
 # copy to .dev.vars for local dev
 CHAOS_TOKEN=dev
+# short idle window and grace so the alarm -> workflow -> R2 path runs in seconds locally
+IDLE_MS=15000
+ARCHIVE_GRACE=5 seconds

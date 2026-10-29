@@ -27,7 +27,6 @@ export interface Message {
 
 export type ChaosMode = "throw" | "abort" | "cpu" | "hang";
 
-const IDLE_MS = 24 * 60 * 60 * 1000; // room idle -> archive
 
 export class RoomDO extends DurableObject<Env> {
   private sql = this.ctx.storage.sql;
@@ -97,7 +96,7 @@ export class RoomDO extends DurableObject<Env> {
       // or the client never got an ack.
       this.broadcast({ type: "message", seq, msg_id: msgId, author, body, ts: now });
       // Every alarm set is a billed row write on the Free plan: one per post is fine.
-      void this.ctx.storage.setAlarm(now + IDLE_MS);
+      void this.ctx.storage.setAlarm(now + this.idleMs());
       // At-least-once hop. The consumer must treat (room, msg_id) as idempotent.
       this.ctx.waitUntil(
         this.env.ROOM_EVENTS.send({ type: "posted", room: this.name, seq, msg_id: msgId, trace }),
@@ -209,12 +208,36 @@ export class RoomDO extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- Alarm
 
-  /** Fires IDLE_MS after the last post. Starts the archive Workflow. */
+  /**
+   * Fires IDLE_MS after the last post (each post pushes it back). Hands off to
+   * the Workflow instead of exporting here: an alarm handler has a CPU
+   * budget and no retries-with-checkpoints, a Workflow has both.
+   */
   async alarm(): Promise<void> {
     const st = this.status();
     this.log("room.idle", { messages: st.messages, sockets: st.sockets });
     if (st.messages === 0) return;
-    await this.env.ARCHIVE.create({ id: `archive-${this.name}-${Date.now()}`, params: { room: this.name } });
+    await this.startArchive("idle");
+  }
+
+  /** Start the archive Workflow. Instance id includes max_seq so the same idle
+   *  point never starts two instances (Workflows reject duplicate ids). */
+  async startArchive(reason: "idle" | "manual"): Promise<string> {
+    const st = this.status();
+    const id = `archive-${this.name}-${st.max_seq}-${reason}`;
+    try {
+      const inst = await this.env.ARCHIVE.create({ id, params: { room: this.name, reason } });
+      this.log("room.archive.start", { instance: inst.id, reason, max_seq: st.max_seq });
+    } catch (e: any) {
+      // Already started for this (room, max_seq): fine, idempotent.
+      this.log("room.archive.exists", { instance: id, error: String(e?.message ?? e) });
+    }
+    return id;
+  }
+
+  private idleMs(): number {
+    const n = Number(this.env.IDLE_MS);
+    return Number.isFinite(n) && n > 0 ? n : 24 * 60 * 60 * 1000;
   }
 
   // ------------------------------------------------------------- Logging

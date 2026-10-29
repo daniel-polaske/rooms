@@ -25,14 +25,36 @@ export class DirectoryDO extends DurableObject<Env> {
           messages  INTEGER NOT NULL DEFAULT 0,
           last_seq  INTEGER NOT NULL DEFAULT 0,
           last_ts   INTEGER NOT NULL DEFAULT 0,
-          archived  INTEGER NOT NULL DEFAULT 0
+          archived  INTEGER NOT NULL DEFAULT 0,
+          archive_key TEXT
         );
         -- Idempotency ledger for queue messages: (room, msg_id) seen once.
         -- Kept small by pruning in bump().
         CREATE TABLE IF NOT EXISTS seen (room TEXT, msg_id TEXT, ts INTEGER, PRIMARY KEY (room, msg_id));
       `);
+      this.migrate();
     });
     log("dir.start", { do: "DirectoryDO", incarnation: this.incarnation });
+  }
+
+  /**
+   * Schema migrations for objects that already exist. There is no central
+   * database to migrate: every object carries its own SQLite file and
+   * upgrades itself the first time new code constructs it. PRAGMA user_version
+   * is the per-object schema version. Each step must be idempotent.
+   */
+  private migrate(): void {
+    // Not PRAGMA user_version: DO SQLite allows only a whitelist of PRAGMAs
+    // (writing user_version fails with SQLITE_AUTH). A one-row table does the job.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS schema (version INTEGER NOT NULL)`);
+    const row = this.sql.exec(`SELECT version FROM schema`).toArray()[0];
+    const v = (row?.version as number | undefined) ?? 0;
+    if (v < 1) {
+      const cols = this.sql.exec(`PRAGMA table_info(rooms)`).toArray().map((c) => c.name);
+      if (!cols.includes("archive_key")) this.sql.exec(`ALTER TABLE rooms ADD COLUMN archive_key TEXT`);
+      this.sql.exec(`DELETE FROM schema; INSERT INTO schema (version) VALUES (1)`);
+      log("dir.migrate", { do: "DirectoryDO", from: v, to: 1 });
+    }
   }
 
   /**
@@ -66,13 +88,17 @@ export class DirectoryDO extends DurableObject<Env> {
 
   list(limit = 100) {
     return this.sql
-      .exec(`SELECT name, messages, last_seq, last_ts, archived FROM rooms ORDER BY last_ts DESC LIMIT ?`, Math.min(limit, 500))
+      .exec(`SELECT name, messages, last_seq, last_ts, archived, archive_key FROM rooms ORDER BY last_ts DESC LIMIT ?`, Math.min(limit, 500))
       .toArray();
   }
 
-  archive(room: string): void {
-    this.sql.exec(`UPDATE rooms SET archived = 1 WHERE name = ?`, room);
-    log("dir.archive", { do: "DirectoryDO", room });
+  archive(room: string, key?: string): void {
+    this.sql.exec(
+      `INSERT INTO rooms (name, archived, archive_key) VALUES (?, 1, ?)
+       ON CONFLICT(name) DO UPDATE SET archived = 1, archive_key = excluded.archive_key`,
+      room, key ?? null,
+    );
+    log("dir.archive", { do: "DirectoryDO", room, key });
   }
 
   status() {
