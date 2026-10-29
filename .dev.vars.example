@@ -1,0 +1,2 @@
+# copy to .dev.vars for local dev
+CHAOS_TOKEN=dev

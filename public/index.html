@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rooms</title>
+<style>
+  :root { --bg:#fff; --fg:#111; --mute:#6b7280; --line:#e5e7eb; --ok:#15803d; --bad:#b91c1c; --warn:#b45309; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0b0d10; --fg:#e5e7eb; --mute:#9ca3af; --line:#1f2937; } }
+  * { box-sizing:border-box }
+  body { margin:0; font:14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; background:var(--bg); color:var(--fg); }
+  header { display:flex; gap:12px; align-items:center; padding:12px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap }
+  header input { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; width:140px }
+  header button { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; cursor:pointer }
+  #status { margin-left:auto; color:var(--mute) }
+  #status b { color:var(--fg) }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--bad); margin-right:6px; vertical-align:middle }
+  .dot.ok { background:var(--ok) } .dot.warn { background:var(--warn) }
+  main { display:grid; grid-template-columns: 1fr 360px; height: calc(100vh - 110px); }
+  @media (max-width:800px){ main { grid-template-columns:1fr; height:auto } }
+  #log, #events { overflow:auto; padding:12px 16px; }
+  #events { border-left:1px solid var(--line); color:var(--mute); font-size:12px }
+  @media (max-width:800px){ #events { border-left:0; border-top:1px solid var(--line) } }
+  .m { padding:2px 0 } .m .seq { color:var(--mute); display:inline-block; width:56px } .m .a { color:var(--warn) }
+  .m.pending { opacity:.5 }
+  footer { display:flex; gap:8px; padding:10px 16px; border-top:1px solid var(--line) }
+  footer input { flex:1; font:inherit; padding:8px; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit }
+  .e { padding:1px 0 } .e.bad { color:var(--bad) } .e.ok { color:var(--ok) }
+</style>
+</head>
+<body>
+<header>
+  <label>room <input id="room" value="lobby"></label>
+  <label>you <input id="author" value=""></label>
+  <button id="join">join</button>
+  <button id="chaos" title="POST /chaos?mode=abort with X-Chaos-Token (dev)">kill room</button>
+  <span id="status"><span class="dot"></span>disconnected</span>
+</header>
+<main>
+  <div id="log"></div>
+  <div id="events"></div>
+</main>
+<footer>
+  <input id="input" placeholder="message (enter to send)" autocomplete="off">
+</footer>
+<script>
+// A deliberately small client that implements the contract the server expects:
+//   - every post carries a client-minted msg_id (so retries are idempotent)
+//   - the client tracks the last seq it saw and asks for history after it on reconnect
+//   - a heartbeat detects a silent (hibernated, evicted or wedged) object
+const $ = (id) => document.getElementById(id);
+const log = $('log'), events = $('events');
+let ws, room, author, lastSeq = 0, incarnation = null, pending = new Map(), hb;
+
+$('author').value = localStorage.getItem('author') || 'user-' + Math.random().toString(36).slice(2, 6);
+$('join').onclick = join;
+$('chaos').onclick = async () => {
+  const r = await fetch(`/api/rooms/${room}/chaos?mode=abort`, { method: 'POST', headers: { 'x-chaos-token': 'dev' } });
+  ev(`chaos abort -> HTTP ${r.status}`, r.ok ? 'ok' : 'bad');
+};
+$('input').onkeydown = (e) => { if (e.key === 'Enter' && e.target.value.trim()) { send(e.target.value.trim()); e.target.value = ''; } };
+
+function ev(text, cls = '') {
+  const d = document.createElement('div'); d.className = 'e ' + cls;
+  d.textContent = new Date().toISOString().slice(11, 23) + ' ' + text;
+  events.prepend(d);
+}
+function status(text, cls) { $('status').innerHTML = `<span class="dot ${cls}"></span>${text}`; }
+
+function render(m, isPending) {
+  let el = document.getElementById('m-' + m.msg_id);
+  if (!el) { el = document.createElement('div'); el.id = 'm-' + m.msg_id; log.appendChild(el); }
+  el.className = 'm' + (isPending ? ' pending' : '');
+  el.innerHTML = `<span class="seq">${m.seq ?? '…'}</span><span class="a">${esc(m.author)}</span> ${esc(m.body)}`;
+  if (!isPending && m.seq > lastSeq) lastSeq = m.seq;
+  log.scrollTop = log.scrollHeight;
+}
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+
+function join() {
+  room = $('room').value.trim() || 'lobby'; author = $('author').value.trim() || 'anon';
+  localStorage.setItem('author', author);
+  log.innerHTML = ''; lastSeq = 0; incarnation = null; connect();
+}
+
+function connect() {
+  if (ws) { try { ws.close(); } catch {} }
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/api/rooms/${room}/ws?author=${encodeURIComponent(author)}`);
+  status('connecting…', 'warn');
+  ws.onopen = () => { status(`connected to <b>${room}</b>`, 'ok'); ws.send(JSON.stringify({ type: 'sync', after: lastSeq })); ev(`ws open, sync after seq ${lastSeq}`, 'ok'); };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'hello') {
+      if (incarnation && incarnation !== m.incarnation) ev(`object RESET: incarnation ${incarnation} -> ${m.incarnation}`, 'bad');
+      incarnation = m.incarnation; ev(`hello incarnation=${m.incarnation} max_seq=${m.max_seq}`);
+      // Re-send anything we never got an ack for. Idempotent on the server.
+      for (const p of pending.values()) ws.send(JSON.stringify({ type: 'post', msg_id: p.msg_id, body: p.body }));
+    } else if (m.type === 'history') { m.messages.forEach((x) => render(x, false)); if (m.messages.length) ev(`history +${m.messages.length}`); }
+    else if (m.type === 'message') { render(m, false); }
+    else if (m.type === 'ack') { const p = pending.get(m.msg_id); if (p) { render({ ...p, seq: m.seq }, false); pending.delete(m.msg_id); } if (m.duplicate) ev(`ack duplicate msg_id=${m.msg_id.slice(0, 8)} seq=${m.seq}`, 'ok'); }
+    else if (m.type === 'pong') { if (incarnation && m.incarnation !== incarnation) { ev(`pong from new incarnation ${m.incarnation}`, 'bad'); incarnation = m.incarnation; } }
+  };
+  ws.onclose = (e) => { status('disconnected, retrying…', 'warn'); ev(`ws close code=${e.code} ${e.reason || ''}`, 'bad'); setTimeout(connect, 500); };
+  ws.onerror = () => ev('ws error', 'bad');
+  clearInterval(hb); hb = setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping' })); }, 10000);
+}
+
+function send(body) {
+  const msg_id = crypto.randomUUID();
+  const p = { msg_id, author, body }; pending.set(msg_id, p); render(p, true);
+  if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'post', msg_id, body }));
+}
+
+join();
+</script>
+</body>
+</html>

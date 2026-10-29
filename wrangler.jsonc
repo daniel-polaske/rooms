@@ -1,0 +1,44 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rooms",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Static client. Served before the Worker for matching paths.
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+
+  // Workers Logs + invocation logs. head_sampling_rate 1 = keep everything
+  // (Free plan: 200k events/day, 3-day retention).
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOM", "class_name": "RoomDO" },
+      { "name": "DIRECTORY", "class_name": "DirectoryDO" }
+    ]
+  },
+  // SQLite-backed classes: the only backend on the Free plan, and the right one anyway.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO", "DirectoryDO"] }],
+
+  "queues": {
+    "producers": [{ "binding": "ROOM_EVENTS", "queue": "room-events" }],
+    "consumers": [
+      {
+        "queue": "room-events",
+        "max_batch_size": 50,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "room-events-dlq"
+      }
+    ]
+  },
+
+  "workflows": [
+    { "name": "rooms-archive", "binding": "ARCHIVE", "class_name": "ArchiveWorkflow" }
+  ],
+
+  // Stage 2: shared secret for /chaos. Set with `wrangler secret put CHAOS_TOKEN`.
+  // For local dev put CHAOS_TOKEN=dev in .dev.vars (gitignored).
+  "vars": {}
+}
