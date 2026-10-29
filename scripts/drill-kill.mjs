@@ -12,10 +12,35 @@
  *
  * Usage: node scripts/drill-kill.mjs [baseUrl] [room] [n] [killEvery]
  *   node scripts/drill-kill.mjs http://localhost:8787 drill 300 25
+ *
+ * Credentials come from .dev.vars (gitignored), never from argv:
+ *   CHAOS_TOKEN              required for /chaos
+ *   CF_ACCESS_CLIENT_ID      service token, when the URL is behind Access
+ *   CF_ACCESS_CLIENT_SECRET
  */
+import { readFileSync } from "node:fs";
+
 const [base = "http://localhost:8787", room = "drill-" + Date.now().toString(36), N = "300", K = "25"] = process.argv.slice(2);
 const n = Number(N), k = Number(K);
-const token = process.env.CHAOS_TOKEN ?? "dev";
+
+const vars = loadDevVars();
+const token = vars.CHAOS_TOKEN ?? "dev";
+const auth = {};
+if (vars.CF_ACCESS_CLIENT_ID && vars.CF_ACCESS_CLIENT_SECRET) {
+  auth["CF-Access-Client-Id"] = vars.CF_ACCESS_CLIENT_ID;
+  auth["CF-Access-Client-Secret"] = vars.CF_ACCESS_CLIENT_SECRET;
+}
+
+function loadDevVars() {
+  const out = { ...process.env };
+  try {
+    for (const line of readFileSync(new URL("../.dev.vars", import.meta.url), "utf8").split("\n")) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+      if (m && m[2] !== "" && !(m[1] in process.env)) out[m[1]] = m[2];
+    }
+  } catch { /* no .dev.vars: fall back to the environment */ }
+  return out;
+}
 
 const acked = new Map(); // msg_id -> seq
 let retries = 0, errors = 0, resets = 0;
@@ -25,9 +50,13 @@ async function post(i) {
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       const r = await fetch(`${base}/api/rooms/${room}/messages`, {
-        method: "POST", headers: { "content-type": "application/json" },
+        method: "POST", headers: { "content-type": "application/json", ...auth },
         body: JSON.stringify({ msg_id, author: "drill", body: `message ${i}` }),
       });
+      if (r.status === 302 || r.status === 401 || r.status === 403) {
+        console.error(`HTTP ${r.status} from ${base}: Access rejected the request. Set CF_ACCESS_CLIENT_ID/SECRET in .dev.vars.`);
+        process.exit(2);
+      }
       const j = await r.json();
       if (r.ok) { acked.set(msg_id, j.seq); return; }
       errors++;
@@ -41,7 +70,7 @@ async function post(i) {
 
 async function kill() {
   resets++;
-  await fetch(`${base}/api/rooms/${room}/chaos?mode=abort`, { method: "POST", headers: { "x-chaos-token": token } }).catch(() => {});
+  await fetch(`${base}/api/rooms/${room}/chaos?mode=abort`, { method: "POST", headers: { "x-chaos-token": token, ...auth } }).catch(() => {});
 }
 
 console.log(`room=${room} n=${n} killEvery=${k} base=${base}`);
@@ -59,7 +88,7 @@ const dt = Date.now() - t0;
 const hist = [];
 let after = 0;
 for (;;) {
-  const page = await (await fetch(`${base}/api/rooms/${room}/messages?after=${after}&limit=500`)).json();
+  const page = await (await fetch(`${base}/api/rooms/${room}/messages?after=${after}&limit=500`, { headers: auth })).json();
   if (!page.length) break;
   hist.push(...page); after = page.at(-1).seq;
 }

@@ -3,3 +3,9 @@ CHAOS_TOKEN=dev
 # short idle window and grace so the alarm -> workflow -> R2 path runs in seconds locally
 IDLE_MS=15000
 ARCHIVE_GRACE=5 seconds
+# local dev has no Access in front of it: disable the JWT check
+ACCESS_AUD=
+# service token for scripts/drill-kill.mjs against the deployed URL
+# (Zero Trust -> Access -> Service Auth). Never commit the real file.
+CF_ACCESS_CLIENT_ID=
+CF_ACCESS_CLIENT_SECRET=

@@ -48,6 +48,11 @@
     // override locally (.dev.vars) to something like 15000 to drill the alarm path.
     "IDLE_MS": "86400000",
     // How long the Workflow waits before marking the room archived.
-    "ARCHIVE_GRACE": "1 hour"
+    "ARCHIVE_GRACE": "1 hour",
+    // Cloudflare Access: team domain and the application's AUD tag. Neither is
+    // secret. Leave ACCESS_AUD empty (as .dev.vars does) to disable the JWT
+    // check for local dev.
+    "ACCESS_TEAM": "hypnagogia",
+    "ACCESS_AUD": "22e9ccbfcb30b2b44766b353d2309e61da143da6aa75c7542ae0f60433394689"
   }
 }

@@ -25,12 +25,13 @@ Keep `npm run tail` open in a second terminal. `B=https://rooms.praedormitium.wo
 Use a hostname-based application, not the per-Worker toggle: Worker-level Access
 returns 403 on WebSocket upgrades and does not pass identity through the static-assets router.
 
-- [ ] Zero Trust -> Access -> Applications -> Self-hosted; domain = workers.dev `rooms.praedormitium`
-- [ ] Allow policy: Emails -> your address (One-time PIN IdP needs no setup)
-- [ ] Service Auth -> create a Service Token; Service Auth policy including it
-- [ ] drills: send `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers (add to `drill-kill.mjs` via env)
-- [ ] Router: verify `Cf-Access-Jwt-Assertion` against `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`
-      and the app AUD; gate on an `ACCESS_AUD` var so local dev keeps working; log caller email on `room.post`
+- [x] Zero Trust -> Access -> Applications -> Self-hosted; domain = workers.dev `rooms.praedormitium`
+- [x] Allow policy: Emails -> your address (One-time PIN IdP needs no setup)
+- [x] Service Auth -> create a Service Token; Service Auth policy including it
+- [x] drills: send `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers (read from `.dev.vars`)
+- [x] Router: verify `Cf-Access-Jwt-Assertion` (src/access.ts, `npm run test:access`); `caller` on every http log line
+- [ ] after deploy: `curl` with the service token -> 200; without -> 302 from Access (never reaches the Worker);
+      a request with a forged/expired JWT would get 401 `http.denied` from the Worker itself
 
 ## Stage 4 (instrumentation)
 

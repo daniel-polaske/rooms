@@ -19,6 +19,7 @@
  */
 
 import { childSpan, log, newTrace, traceparent } from "./log";
+import { AccessError, verifyAccess, type Caller } from "./access";
 import type { ChaosMode } from "./room";
 
 export { RoomDO } from "./room";
@@ -40,10 +41,23 @@ export default {
     const trace = newTrace(request.headers.get("traceparent"));
     const started = Date.now();
     const colo = (request.cf as { colo?: string } | undefined)?.colo ?? "local";
-    const base = { trace_id: trace.trace_id, span_id: trace.span_id, method: request.method, path: url.pathname, colo };
+    const base: Record<string, unknown> = { trace_id: trace.trace_id, span_id: trace.span_id, method: request.method, path: url.pathname, colo };
 
     try {
-      const res = await route(request, env, url, trace);
+      // Access verified the request at the edge; we verify its proof and learn who is calling.
+      let caller: Caller | null = null;
+      try {
+        caller = await verifyAccess(request, env);
+      } catch (e) {
+        if (e instanceof AccessError) {
+          log("http.denied", { ...base, reason: e.message });
+          return json({ error: "unauthorized", reason: e.message, trace_id: trace.trace_id }, 401);
+        }
+        throw e;
+      }
+      if (caller) { base.caller = caller.id; base.caller_kind = caller.kind; }
+
+      const res = await route(request, env, url, trace, caller);
       log("http.done", { ...base, status: res.status, wall_ms: Date.now() - started });
       // A 101 must be returned exactly as the object produced it: its headers
       // are immutable once it has crossed the isolate boundary, and the
@@ -85,7 +99,7 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-async function route(request: Request, env: Env, url: URL, trace: ReturnType<typeof newTrace>): Promise<Response> {
+async function route(request: Request, env: Env, url: URL, trace: ReturnType<typeof newTrace>, caller: Caller | null): Promise<Response> {
   const parts = url.pathname.split("/").filter(Boolean); // ["api", "rooms", name, sub]
 
   if (parts[1] === "directory" && request.method === "GET") {
@@ -127,6 +141,11 @@ async function route(request: Request, env: Env, url: URL, trace: ReturnType<typ
 
   if (sub === "ws") {
     await room.setName(name);
+    // The object tags the socket with ?author=; a verified user identity wins over the client's claim.
+    if (caller?.kind === "user") {
+      const u = new URL(request.url); u.searchParams.set("author", caller.id);
+      request = new Request(u, request);
+    }
     return room.fetch(request); // upgrade is handled inside the object
   }
 
@@ -140,11 +159,13 @@ async function route(request: Request, env: Env, url: URL, trace: ReturnType<typ
     const body = (await request.json().catch(() => null)) as { msg_id?: string; author?: string; body?: string } | null;
     if (!body?.body) return json({ error: "body required" }, 400);
     const msgId = body.msg_id ?? crypto.randomUUID();
+    // A verified person is the author, whatever the body says; a service token keeps the body's author.
+    const author = caller?.kind === "user" ? caller.id : (body.author ?? "anon");
     await room.setName(name);
     // Retry only errors the runtime marks retryable (object reset, etc.).
     // Safe because post() is idempotent on msg_id. Remove the idempotency and
     // this wrapper will double-post: that is the Stage 2 lesson.
-    const r = await withRetry(() => room.post(msgId, body.author ?? "anon", body.body!, childSpan(trace)));
+    const r = await withRetry(() => room.post(msgId, author, body.body!, childSpan(trace)));
     return json({ ...r, msg_id: msgId }, r.duplicate ? 200 : 201);
   }
 
