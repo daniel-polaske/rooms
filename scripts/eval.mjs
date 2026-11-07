@@ -27,10 +27,15 @@
  *
  * Output: reports/evals/<run>/results.json, summary.md, and per task the agent log,
  * gate logs and the diff. The summary is printed at the end.
+ *
+ * While it runs:
+ *   tail -f reports/evals/<run>/<task>/agent.log            the agent, live
+ *   git -C .eval-worktrees/<run>/<task> diff --stat         what it has changed so far
+ *   ls reports/evals/<run>/<task>/                          which grading steps have finished
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -83,6 +88,7 @@ async function runTask(task, index) {
   const graderHash = sha(grader);
   const result = { id: task.id, difficulty: task.difficulty, pass: false, reason: null };
   const t0 = Date.now();
+  console.log(`  ..    ${task.id.padEnd(22)} worktree ${path.relative(root, wt)}`);
 
   try {
     sh(["git", "worktree", "add", "--detach", wt, base], root, { check: true });
@@ -152,17 +158,20 @@ ${spec}`;
 async function runAgent(cmd, prompt, cwd, dir) {
   const t0 = Date.now();
   const timeoutMs = (args.timeoutMin ?? 30) * 60_000;
+  // Streamed to agent.log as it happens, so `tail -f` shows the agent working.
+  const log = createWriteStream(path.join(dir, "agent.log"));
   const out = [];
   const child = spawn("sh", ["-c", cmd], { cwd, detached: true, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, EVAL_TASK: path.basename(dir), CI: "1" } });
-  child.stdout.on("data", (d) => out.push(d));
-  child.stderr.on("data", (d) => out.push(d));
+  const keep = (d) => { out.push(d); log.write(d); };
+  child.stdout.on("data", keep);
+  child.stderr.on("data", keep);
   child.stdin.end(prompt);
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } }, timeoutMs);
   const code = await new Promise((resolve) => child.on("exit", (c) => resolve(c ?? -1)));
   clearTimeout(timer);
   const text = Buffer.concat(out).toString();
-  writeFileSync(path.join(dir, "agent.log"), text);
+  log.end();
   return { code, ms: Date.now() - t0, cost: findCost(text), timedOut };
 }
 
