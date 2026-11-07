@@ -121,7 +121,11 @@ async function runTask(task, index) {
     writeFileSync(path.join(dir, "diff.patch"), sh(["git", "diff", "--", ".", `:!features/eval-${task.id}.feature`], wt).stdout);
 
     result.pass = result.grader_unchanged && result.gates_ok && result.regressions_ok && result.task_ok;
+    // An agent that exited non-zero, timed out, or touched nothing is a null
+    // result, not a measurement: say so instead of reporting a scenario count.
+    const nullRun = !args.baseline && (result.timed_out || result.agent_exit !== 0 || result.diff.files === 0);
     result.reason = result.pass ? null
+      : nullRun ? `agent did not run: exit ${result.agent_exit}${result.timed_out ? ", timed out" : ""}, ${result.diff.files} files changed; see agent.log`
       : !result.grader_unchanged ? "grader was edited"
       : !result.gates_ok ? "gates failed"
       : !result.regressions_ok ? "existing scenarios regressed"
