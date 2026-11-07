@@ -71,8 +71,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -89,11 +87,14 @@ jobs:
             stryker-incremental-${{ github.ref }}-
             stryker-incremental-refs/heads/main-
       - name: Mutation test (incremental on pull requests)
+        # Incremental mode re-runs only the mutants whose code or tests changed
+        # since the cached report; with no cache (first run on a branch) it is
+        # a full run. Weekly and manual runs are always full.
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            npx stryker run --incremental --since origin/${{ github.base_ref }} --concurrency 4
+            npx stryker run --incremental --concurrency 4
           else
-            npx stryker run --concurrency 4
+            npx stryker run --force --incremental --concurrency 4
           fi
       - name: Mutation summary
         if: always()

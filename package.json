@@ -17,7 +17,7 @@
     "acceptance": "node scripts/acceptance.mjs",
     "acceptance:remote": "node scripts/acceptance.mjs",
     "mutate": "stryker run",
-    "mutate:changed": "stryker run --incremental --since",
+    "mutate:changed": "stryker run --incremental",
     "gates": "npm run types && npm run check && npm run lint && npm run depcruise && npm run test:coverage",
     "drill:kill": "node scripts/drill-kill.mjs"
   },
