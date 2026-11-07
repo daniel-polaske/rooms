@@ -29,9 +29,15 @@ returns 403 on WebSocket upgrades and does not pass identity through the static-
 - [x] Allow policy: Emails -> your address (One-time PIN IdP needs no setup)
 - [x] Service Auth -> create a Service Token; Service Auth policy including it
 - [x] drills: send `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers (read from `.dev.vars`)
-- [x] Router: verify `Cf-Access-Jwt-Assertion` (src/access.ts, `npm run test:access`); `caller` on every http log line
+- [x] Router: verify `Cf-Access-Jwt-Assertion` (src/access.ts, `test/access.test.ts`, `test/router-access.test.ts`); `caller` on every http log line
 - [ ] after deploy: `curl` with the service token -> 200; without -> 302 from Access (never reaches the Worker);
       a request with a forged/expired JWT would get 401 `http.denied` from the Worker itself
+
+## Harness (see HARNESS.md)
+
+- [ ] GitHub -> Settings -> Branches: protect `main`, require the `gates` and `acceptance` checks
+- [ ] mutation 67 -> 80: assert the structured log events on every state-changing path
+- [ ] branches 82 -> 90: `archive.ts` reason default and grace fallback
 
 ## Stage 4 (instrumentation)
 

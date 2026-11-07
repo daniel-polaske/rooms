@@ -47,9 +47,15 @@ export async function verifyAccess(request: Request, env: Env): Promise<Caller |
   );
   if (!ok) throw new AccessError("bad signature");
 
-  const claims = JSON.parse(b64urlToString(p)) as {
-    aud: string | string[]; iss: string; exp: number; nbf?: number; email?: string; common_name?: string;
-  };
+  return identify(JSON.parse(b64urlToString(p)) as Claims, env);
+}
+
+interface Claims {
+  aud: string | string[]; iss: string; exp: number; nbf?: number; email?: string; common_name?: string;
+}
+
+/** The signature is good; now the claims have to be ours, current, and name someone. */
+function identify(claims: Claims, env: Env): Caller {
   const now = Math.floor(Date.now() / 1000);
   const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (!aud.includes(env.ACCESS_AUD)) throw new AccessError("aud mismatch");

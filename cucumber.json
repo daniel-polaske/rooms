@@ -1,0 +1,9 @@
+{
+  "default": {
+    "paths": ["features/**/*.feature"],
+    "import": ["features/support/**/*.mjs", "features/steps/**/*.mjs"],
+    "format": ["progress", "summary"],
+    "publishQuiet": true,
+    "failFast": false
+  }
+}

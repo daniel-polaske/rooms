@@ -16,18 +16,25 @@ src/directory.ts  DirectoryDO: the deliberate singleton (room index + counters)
 src/archive.ts    ArchiveWorkflow: export -> R2, durable sleep, verify etag, mark (checkpointed steps)
 src/log.ts        structured JSON logging + hand-carried trace context
 public/index.html minimal client: msg_id per post, resync after reconnect, heartbeat
+test/             unit + integration tests, run inside workerd against the real bindings
+features/         Gherkin acceptance scenarios, run over HTTP against wrangler dev
 scripts/drill-kill.mjs  Stage 2/5 drill: kill the room mid-stream, verify invariants
+scripts/acceptance.mjs  boots wrangler dev and runs the features against it
+HARNESS.md        the gates, their floors, and the ratchet rule
 ```
 
 ## Run
 
 ```sh
-npm install
+npm ci
 cp .dev.vars.example .dev.vars     # CHAOS_TOKEN=dev for local
 npm run types                      # generates worker-configuration.d.ts from wrangler.jsonc
-npm run check                      # tsc
+npm run gates                      # types, lint, dependency rules, tests + coverage
+npm run acceptance                 # the Gherkin scenarios against a local wrangler dev
 npm run dev                        # http://localhost:8787
 ```
+
+Nothing merges unless the gates in [HARNESS.md](HARNESS.md) pass; CI runs them on every pull request.
 
 In another terminal:
 

@@ -13,25 +13,18 @@
  * Usage: node scripts/drill-kill.mjs [baseUrl] [room] [n] [killEvery]
  *   node scripts/drill-kill.mjs http://localhost:8787 drill 300 25
  *
+ * Also importable: `drill({ base, room, n, k, token, auth })` returns the
+ * numbers; the acceptance suite (features/) runs it as the I2 scenario.
+ *
  * Credentials come from .dev.vars (gitignored), never from argv:
  *   CHAOS_TOKEN              required for /chaos
  *   CF_ACCESS_CLIENT_ID      service token, when the URL is behind Access
  *   CF_ACCESS_CLIENT_SECRET
  */
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
-const [base = "http://localhost:8787", room = "drill-" + Date.now().toString(36), N = "300", K = "25"] = process.argv.slice(2);
-const n = Number(N), k = Number(K);
-
-const vars = loadDevVars();
-const token = vars.CHAOS_TOKEN ?? "dev";
-const auth = {};
-if (vars.CF_ACCESS_CLIENT_ID && vars.CF_ACCESS_CLIENT_SECRET) {
-  auth["CF-Access-Client-Id"] = vars.CF_ACCESS_CLIENT_ID;
-  auth["CF-Access-Client-Secret"] = vars.CF_ACCESS_CLIENT_SECRET;
-}
-
-function loadDevVars() {
+export function loadDevVars() {
   const out = { ...process.env };
   try {
     for (const line of readFileSync(new URL("../.dev.vars", import.meta.url), "utf8").split("\n")) {
@@ -42,66 +35,92 @@ function loadDevVars() {
   return out;
 }
 
-const acked = new Map(); // msg_id -> seq
-let retries = 0, errors = 0, resets = 0;
+/** Access service-token headers for a deployed URL, or {} locally. */
+export function accessHeaders(vars) {
+  return vars.CF_ACCESS_CLIENT_ID && vars.CF_ACCESS_CLIENT_SECRET
+    ? { "CF-Access-Client-Id": vars.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Secret": vars.CF_ACCESS_CLIENT_SECRET }
+    : {};
+}
 
-async function post(i) {
-  const msg_id = `drill-${i}-${Math.random().toString(36).slice(2, 8)}`;
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    try {
-      const r = await fetch(`${base}/api/rooms/${room}/messages`, {
-        method: "POST", headers: { "content-type": "application/json", ...auth },
-        body: JSON.stringify({ msg_id, author: "drill", body: `message ${i}` }),
-      });
-      if (r.status === 302 || r.status === 401 || r.status === 403) {
-        console.error(`HTTP ${r.status} from ${base}: Access rejected the request. Set CF_ACCESS_CLIENT_ID/SECRET in .dev.vars.`);
-        process.exit(2);
+export async function drill({ base, room, n, k, token, auth = {}, log = () => {} }) {
+  const acked = new Map(); // msg_id -> seq
+  let retries = 0, errors = 0, resets = 0;
+
+  async function post(i) {
+    const msg_id = `drill-${i}-${Math.random().toString(36).slice(2, 8)}`;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        const r = await fetch(`${base}/api/rooms/${room}/messages`, {
+          method: "POST", headers: { "content-type": "application/json", ...auth },
+          body: JSON.stringify({ msg_id, author: "drill", body: `message ${i}` }),
+        });
+        if (r.status === 302 || r.status === 401 || r.status === 403) {
+          throw new DrillAccessError(`HTTP ${r.status} from ${base}: Access rejected the request. Set CF_ACCESS_CLIENT_ID/SECRET in .dev.vars.`);
+        }
+        const j = await r.json();
+        if (r.ok) { acked.set(msg_id, j.seq); return; }
+        errors++;
+        if (!j.retryable && r.status !== 500) throw new Error(`${r.status} ${JSON.stringify(j)}`);
+      } catch (e) {
+        if (e instanceof DrillAccessError) throw e;
+        errors++;
       }
-      const j = await r.json();
-      if (r.ok) { acked.set(msg_id, j.seq); return; }
-      errors++;
-      if (!j.retryable && r.status !== 500) throw new Error(`${r.status} ${JSON.stringify(j)}`);
-    } catch (e) { errors++; }
-    retries++;
-    await new Promise((res) => setTimeout(res, 30 * attempt));
+      retries++;
+      await new Promise((res) => setTimeout(res, 30 * attempt));
+    }
+    throw new Error(`gave up on ${msg_id}`);
   }
-  throw new Error(`gave up on ${msg_id}`);
+
+  async function kill() {
+    resets++;
+    await fetch(`${base}/api/rooms/${room}/chaos?mode=abort`, { method: "POST", headers: { "x-chaos-token": token, ...auth } }).catch(() => {});
+  }
+
+  log(`room=${room} n=${n} killEvery=${k} base=${base}`);
+  const t0 = Date.now();
+  const inflight = [];
+  for (let i = 0; i < n; i++) {
+    inflight.push(post(i));
+    if (i > 0 && i % k === 0) inflight.push(kill());
+    if (inflight.length >= 20) { await Promise.all(inflight.splice(0)); }
+  }
+  await Promise.all(inflight);
+  const ms = Date.now() - t0;
+
+  // Read everything back.
+  const hist = [];
+  let after = 0;
+  for (;;) {
+    const page = await (await fetch(`${base}/api/rooms/${room}/messages?after=${after}&limit=500`, { headers: auth })).json();
+    if (!page.length) break;
+    hist.push(...page); after = page.at(-1).seq;
+  }
+
+  const seen = new Map();
+  for (const m of hist) seen.set(m.msg_id, (seen.get(m.msg_id) ?? 0) + 1);
+  const missingAcked = [...acked.keys()].filter((id) => !seen.has(id));
+  const duplicates = [...seen.entries()].filter(([, c]) => c > 1).map(([id]) => id);
+  let seqMonotonic = true;
+  for (let i = 1; i < hist.length; i++) if (hist[i].seq <= hist[i - 1].seq) seqMonotonic = false;
+
+  const pass = missingAcked.length === 0 && duplicates.length === 0 && seqMonotonic;
+  return { pass, posted: n, acked: acked.size, inHistory: hist.length, resets, retries, errors, ms, missingAcked, duplicates, seqMonotonic };
 }
 
-async function kill() {
-  resets++;
-  await fetch(`${base}/api/rooms/${room}/chaos?mode=abort`, { method: "POST", headers: { "x-chaos-token": token, ...auth } }).catch(() => {});
+export class DrillAccessError extends Error {}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [base = "http://localhost:8787", room = "drill-" + Date.now().toString(36), N = "300", K = "25"] = process.argv.slice(2);
+  const vars = loadDevVars();
+  try {
+    const r = await drill({ base, room, n: Number(N), k: Number(K), token: vars.CHAOS_TOKEN ?? "dev", auth: accessHeaders(vars), log: console.log });
+    const { pass, missingAcked, duplicates, seqMonotonic, ...counts } = r;
+    console.log(counts);
+    console.log({ missingAcked: missingAcked.length, duplicates: duplicates.length, seqMonotonic });
+    console.log(pass ? "PASS: no acknowledged write lost, no duplicates, total order held" : "FAIL");
+    process.exit(pass ? 0 : 1);
+  } catch (e) {
+    console.error(e.message);
+    process.exit(e instanceof DrillAccessError ? 2 : 1);
+  }
 }
-
-console.log(`room=${room} n=${n} killEvery=${k} base=${base}`);
-const t0 = Date.now();
-const inflight = [];
-for (let i = 0; i < n; i++) {
-  inflight.push(post(i));
-  if (i > 0 && i % k === 0) inflight.push(kill());
-  if (inflight.length >= 20) { await Promise.all(inflight.splice(0)); }
-}
-await Promise.all(inflight);
-const dt = Date.now() - t0;
-
-// Read everything back.
-const hist = [];
-let after = 0;
-for (;;) {
-  const page = await (await fetch(`${base}/api/rooms/${room}/messages?after=${after}&limit=500`, { headers: auth })).json();
-  if (!page.length) break;
-  hist.push(...page); after = page.at(-1).seq;
-}
-
-const seen = new Map();
-for (const m of hist) seen.set(m.msg_id, (seen.get(m.msg_id) ?? 0) + 1);
-const missing = [...acked.keys()].filter((id) => !seen.has(id));
-const dupes = [...seen.entries()].filter(([, c]) => c > 1).map(([id]) => id);
-let monotonic = true;
-for (let i = 1; i < hist.length; i++) if (hist[i].seq <= hist[i - 1].seq) monotonic = false;
-
-console.log({ posted: n, acked: acked.size, inHistory: hist.length, resets, retries, errors, ms: dt });
-console.log({ missingAcked: missing.length, duplicates: dupes.length, seqMonotonic: monotonic });
-const pass = missing.length === 0 && dupes.length === 0 && monotonic;
-console.log(pass ? "PASS: no acknowledged write lost, no duplicates, total order held" : "FAIL");
-process.exit(pass ? 0 : 1);

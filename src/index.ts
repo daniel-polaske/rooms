@@ -18,7 +18,7 @@
  *   GET  /api/directory                     directory status
  */
 
-import { childSpan, log, newTrace, traceparent } from "./log";
+import { childSpan, log, newTrace, traceparent, type Trace } from "./log";
 import { AccessError, verifyAccess, type Caller } from "./access";
 import type { ChaosMode } from "./room";
 
@@ -31,8 +31,14 @@ const json = (data: unknown, status = 200, headers: Record<string, string> = {})
 
 const ROOM_NAME = /^[a-z0-9][a-z0-9-_]{0,63}$/;
 
+/** What the Router reports about a failure. Objects mark resets as retryable; everything else is not. */
+function describe(e: unknown): { message: string; retryable: boolean } {
+  const err = e as { message?: unknown; retryable?: unknown } | null;
+  return { message: String(err?.message ?? e), retryable: !!err?.retryable };
+}
+
 export default {
-  async fetch(request, env, ctx): Promise<Response> {
+  async fetch(request, env, _ctx): Promise<Response> {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/api/")) {
       return env.ASSETS.fetch(request);
@@ -66,9 +72,10 @@ export default {
       const out = new Response(res.body, res);
       out.headers.set("traceparent", traceparent(trace));
       return out;
-    } catch (e: any) {
-      log("http.error", { ...base, error: String(e?.message ?? e), retryable: !!e?.retryable, wall_ms: Date.now() - started });
-      return json({ error: String(e?.message ?? e), retryable: !!e?.retryable, trace_id: trace.trace_id }, 500);
+    } catch (e) {
+      const { message, retryable } = describe(e);
+      log("http.error", { ...base, error: message, retryable, wall_ms: Date.now() - started });
+      return json({ error: message, retryable, trace_id: trace.trace_id }, 500);
     }
   },
 
@@ -95,101 +102,122 @@ export default {
       log("queue.batch", { size: batch.messages.length, ...r });
     }
     // Ack only what we handed off; poison messages were already marked retry().
-    for (const m of batch.messages) if ((m.body as any).msg_id !== "poison") m.ack();
+    for (const m of batch.messages) if ((m.body as { msg_id?: string }).msg_id !== "poison") m.ack();
   },
 } satisfies ExportedHandler<Env>;
 
-async function route(request: Request, env: Env, url: URL, trace: ReturnType<typeof newTrace>, caller: Caller | null): Promise<Response> {
+/** Everything a handler needs to know about the request, resolved once in fetch(). */
+interface RouteContext {
+  request: Request;
+  env: Env;
+  url: URL;
+  trace: Trace;
+  caller: Caller | null;
+}
+type RoomStub = ReturnType<Env["ROOM"]["getByName"]>;
+
+async function route(request: Request, env: Env, url: URL, trace: Trace, caller: Caller | null): Promise<Response> {
+  const ctx: RouteContext = { request, env, url, trace, caller };
   const parts = url.pathname.split("/").filter(Boolean); // ["api", "rooms", name, sub]
 
   if (parts[1] === "directory" && request.method === "GET") {
     return json(await env.DIRECTORY.getByName("main").status());
   }
-
   if (parts[1] === "archives" && parts[2] && request.method === "GET") {
-    const inst = await env.ARCHIVE.get(parts[2]).catch(() => null);
-    if (!inst) return json({ error: "no such instance" }, 404);
-    const st = await inst.status();
-    if (parts[3] === "body") {
-      const key = (st.output as { key?: string } | undefined)?.key;
-      if (!key) return json({ status: st.status, error: "no output yet" }, 409);
-      const obj = await env.ARCHIVES.get(key);
-      if (!obj) return json({ error: "object missing", key }, 404);
-      return new Response(obj.body, { headers: { "content-type": "application/json", etag: obj.etag } });
-    }
-    return json({ id: parts[2], ...st });
+    return archiveStatus(env, parts[2], parts[3] === "body");
   }
-
   if (parts[1] !== "rooms") return json({ error: "not found" }, 404);
-
   if (parts.length === 2 && request.method === "GET") {
     return json(await env.DIRECTORY.getByName("main").list());
   }
 
   const name = parts[2];
   if (!name || !ROOM_NAME.test(name)) return json({ error: "bad room name" }, 400);
-  const sub = parts[3];
+  return routeRoom(ctx, name, parts[3]);
+}
 
+async function archiveStatus(env: Env, instanceId: string, wantBody: boolean): Promise<Response> {
+  const inst = await env.ARCHIVE.get(instanceId).catch(() => null);
+  if (!inst) return json({ error: "no such instance" }, 404);
+  const st = await inst.status();
+  if (!wantBody) return json({ id: instanceId, ...st });
+  const key = (st.output as { key?: string } | undefined)?.key;
+  if (!key) return json({ status: st.status, error: "no output yet" }, 409);
+  const obj = await env.ARCHIVES.get(key);
+  if (!obj) return json({ error: "object missing", key }, 404);
+  return new Response(obj.body, { headers: { "content-type": "application/json", etag: obj.etag } });
+}
+
+async function routeRoom(ctx: RouteContext, name: string, sub: string | undefined): Promise<Response> {
+  const { request, env, url } = ctx;
   // idFromName is deterministic: the same name always maps to the same object,
   // wherever in the world it currently lives. That one line is the sharding.
   const room = env.ROOM.getByName(name);
 
-  if (!sub && request.method === "GET") {
-    await room.setName(name);
-    return json(await room.status());
-  }
+  const handlers: Record<string, () => Promise<Response>> = {
+    "GET": async () => { await room.setName(name); return json(await room.status()); },
+    "ws": () => openSocket(ctx, room, name), // any method: the object answers 426 to a non-upgrade
+    "GET messages": async () => {
+      const after = Number(url.searchParams.get("after") ?? 0);
+      const limit = Number(url.searchParams.get("limit") ?? 50);
+      return json(await room.history(after, limit));
+    },
+    "POST messages": () => postMessage(ctx, room, name),
+    "POST archive": async () => requireToken(ctx) ?? startArchive(room, name),
+    "POST chaos": async () => requireToken(ctx) ?? injectChaos(ctx, room, name),
+  };
+  const key = sub === "ws" ? "ws" : [request.method, sub].filter(Boolean).join(" ");
+  const handler = handlers[key];
+  return handler ? handler() : json({ error: "not found" }, 404);
+}
 
-  if (sub === "ws") {
-    await room.setName(name);
-    // The object tags the socket with ?author=; a verified user identity wins over the client's claim.
-    if (caller?.kind === "user") {
-      const u = new URL(request.url); u.searchParams.set("author", caller.id);
-      request = new Request(u, request);
-    }
-    return room.fetch(request); // upgrade is handled inside the object
+async function openSocket(ctx: RouteContext, room: RoomStub, name: string): Promise<Response> {
+  let { request } = ctx;
+  await room.setName(name);
+  // The object tags the socket with ?author=; a verified user identity wins over the client's claim.
+  if (ctx.caller?.kind === "user") {
+    const u = new URL(request.url); u.searchParams.set("author", ctx.caller.id);
+    request = new Request(u, request);
   }
+  return room.fetch(request); // upgrade is handled inside the object
+}
 
-  if (sub === "messages" && request.method === "GET") {
-    const after = Number(url.searchParams.get("after") ?? 0);
-    const limit = Number(url.searchParams.get("limit") ?? 50);
-    return json(await room.history(after, limit));
-  }
+async function postMessage(ctx: RouteContext, room: RoomStub, name: string): Promise<Response> {
+  const { request, caller, trace } = ctx;
+  const body = (await request.json().catch(() => null)) as { msg_id?: string; author?: string; body?: string } | null;
+  if (!body?.body) return json({ error: "body required" }, 400);
+  const msgId = body.msg_id ?? crypto.randomUUID();
+  // A verified person is the author, whatever the body says; a service token keeps the body's author.
+  const author = caller?.kind === "user" ? caller.id : (body.author ?? "anon");
+  await room.setName(name);
+  // Retry only errors the runtime marks retryable (object reset, etc.).
+  // Safe because post() is idempotent on msg_id. Remove the idempotency and
+  // this wrapper will double-post: that is the Stage 2 lesson.
+  const r = await withRetry(() => room.post(msgId, author, body.body!, childSpan(trace)));
+  return json({ ...r, msg_id: msgId }, r.duplicate ? 200 : 201);
+}
 
-  if (sub === "messages" && request.method === "POST") {
-    const body = (await request.json().catch(() => null)) as { msg_id?: string; author?: string; body?: string } | null;
-    if (!body?.body) return json({ error: "body required" }, 400);
-    const msgId = body.msg_id ?? crypto.randomUUID();
-    // A verified person is the author, whatever the body says; a service token keeps the body's author.
-    const author = caller?.kind === "user" ? caller.id : (body.author ?? "anon");
-    await room.setName(name);
-    // Retry only errors the runtime marks retryable (object reset, etc.).
-    // Safe because post() is idempotent on msg_id. Remove the idempotency and
-    // this wrapper will double-post: that is the Stage 2 lesson.
-    const r = await withRetry(() => room.post(msgId, author, body.body!, childSpan(trace)));
-    return json({ ...r, msg_id: msgId }, r.duplicate ? 200 : 201);
-  }
+/** The fault-injection and archive endpoints share one secret. Returns the 403, or null to proceed. */
+function requireToken({ request, env }: RouteContext): Response | null {
+  const token = request.headers.get("x-chaos-token");
+  if (!env.CHAOS_TOKEN || token !== env.CHAOS_TOKEN) return json({ error: "forbidden" }, 403);
+  return null;
+}
 
-  if (sub === "archive" && request.method === "POST") {
-    const token = request.headers.get("x-chaos-token");
-    if (!env.CHAOS_TOKEN || token !== env.CHAOS_TOKEN) return json({ error: "forbidden" }, 403);
-    await room.setName(name);
-    const id = await room.startArchive("manual");
-    return json({ instance: id, status_url: `/api/archives/${id}` }, 202);
-  }
+async function startArchive(room: RoomStub, name: string): Promise<Response> {
+  await room.setName(name);
+  const id = await room.startArchive("manual");
+  return json({ instance: id, status_url: `/api/archives/${id}` }, 202);
+}
 
-  if (sub === "chaos" && request.method === "POST") {
-    const token = request.headers.get("x-chaos-token");
-    if (!env.CHAOS_TOKEN || token !== env.CHAOS_TOKEN) return json({ error: "forbidden" }, 403);
-    const mode = (url.searchParams.get("mode") ?? "throw") as ChaosMode;
-    if (!["throw", "abort", "cpu", "hang"].includes(mode)) return json({ error: "bad mode" }, 400);
-    log("chaos.request", { room: name, mode, trace_id: trace.trace_id });
-    await room.setName(name);
-    // No retry here, on purpose: we want to see the raw failure.
-    await room.chaos(mode);
-    return json({ ok: true }); // only "hang" would never get here; others throw
-  }
-
-  return json({ error: "not found" }, 404);
+async function injectChaos(ctx: RouteContext, room: RoomStub, name: string): Promise<Response> {
+  const mode = (ctx.url.searchParams.get("mode") ?? "throw") as ChaosMode;
+  if (!["throw", "abort", "cpu", "hang"].includes(mode)) return json({ error: "bad mode" }, 400);
+  log("chaos.request", { room: name, mode, trace_id: ctx.trace.trace_id });
+  await room.setName(name);
+  // No retry here, on purpose: we want to see the raw failure.
+  await room.chaos(mode);
+  return json({ ok: true }); // only "hang" would never get here; others throw
 }
 
 async function withRetry<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
@@ -197,10 +225,11 @@ async function withRetry<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
   for (let i = 0; i < tries; i++) {
     try {
       return await fn();
-    } catch (e: any) {
+    } catch (e) {
       last = e;
-      if (!e?.retryable) throw e;
-      log("router.retry", { attempt: i + 1, error: String(e?.message ?? e) });
+      const { message, retryable } = describe(e);
+      if (!retryable) throw e;
+      log("router.retry", { attempt: i + 1, error: message });
       await new Promise((r) => setTimeout(r, 50 * 2 ** i));
     }
   }

@@ -4,3 +4,6 @@ node_modules
 worker-configuration.d.ts
 dist
 dist-test
+coverage
+reports
+.stryker-tmp
