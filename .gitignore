@@ -7,3 +7,4 @@ dist-test
 coverage
 reports
 .stryker-tmp
+.eval-worktrees

@@ -19,7 +19,9 @@
     "mutate": "stryker run",
     "mutate:changed": "stryker run --incremental",
     "gates": "npm run types && npm run check && npm run lint && npm run depcruise && npm run test:coverage",
-    "drill:kill": "node scripts/drill-kill.mjs"
+    "drill:kill": "node scripts/drill-kill.mjs",
+    "eval": "node scripts/eval.mjs",
+    "eval:baseline": "node scripts/eval.mjs --baseline"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.6.0",

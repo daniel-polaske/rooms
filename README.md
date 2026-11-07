@@ -20,6 +20,8 @@ test/             unit + integration tests, run inside workerd against the real 
 features/         Gherkin acceptance scenarios, run over HTTP against wrangler dev
 scripts/drill-kill.mjs  Stage 2/5 drill: kill the room mid-stream, verify invariants
 scripts/acceptance.mjs  boots wrangler dev and runs the features against it
+scripts/eval.mjs        scores an agent against the harness on the tasks in evals/
+evals/            ten feature tasks with Gherkin graders: the eval set (evals/README.md)
 HARNESS.md        the gates, their floors, and the ratchet rule
 ```
 

@@ -9,15 +9,25 @@ Given("a fresh room", async function () {
   this.incarnation = st.incarnation;
 });
 
+function rememberSeq(world) {
+  const seq = world.last?.body?.seq;
+  if (typeof seq === "number") {
+    world.lastSeq = seq;
+    if (world.firstSeq == null) world.firstSeq = seq;
+  }
+}
+
 When("I post a message with msg_id {string} and body {string}", async function (msgId, body) {
   await this.post(msgId, body);
   assert.ok([200, 201].includes(this.last.status), `post failed: ${this.last.status} ${JSON.stringify(this.last.body)}`);
+  rememberSeq(this);
 });
 
 When("I post {int} messages", async function (n) {
   for (let i = 0; i < n; i++) {
     await this.post(`m-${i}`, `message ${i}`);
     assert.equal(this.last.status, 201, `post ${i}: ${this.last.status} ${JSON.stringify(this.last.body)}`);
+    rememberSeq(this);
   }
 });
 

@@ -1,0 +1,12 @@
+[
+  { "id": "message-size", "difficulty": "easy", "summary": "Reject bodies over 4096 bytes over HTTP and the socket" },
+  { "id": "history-search", "difficulty": "easy", "summary": "Case-insensitive substring filter on history, in SQLite" },
+  { "id": "author-stats", "difficulty": "easy", "summary": "Per-author counts for a room via one GROUP BY" },
+  { "id": "rate-limit", "difficulty": "medium", "summary": "60 posts per author per rolling minute, 429 with retry-after" },
+  { "id": "delete-message", "difficulty": "medium", "summary": "Soft delete with a schema migration and a broadcast" },
+  { "id": "room-list-pagination", "difficulty": "medium", "summary": "Keyset pagination of the directory with an opaque cursor header" },
+  { "id": "ws-presence", "difficulty": "medium", "summary": "Join and leave announcements over the hibernation API" },
+  { "id": "export-ndjson", "difficulty": "medium", "summary": "Stream an R2 archive as newline-delimited JSON" },
+  { "id": "idle-override", "difficulty": "hard", "summary": "Per-room idle timeout persisted in the object, alarm rescheduled" },
+  { "id": "directory-sharding", "difficulty": "hard", "summary": "Shard DirectoryDO by fnv1a(room) % N with fan-out and merge" }
+]
