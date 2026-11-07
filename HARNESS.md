@@ -49,6 +49,14 @@ Measured on 2026-11-06, in the order they pay:
 - **Coverage of the untestable.** `chaos cpu` and `chaos hang` cannot run in-process. They
   are exercised against the deployed Worker (TODO.md); keep it that way, do not fake them.
 
+## Evals: the harness as a grader
+
+The gates decide whether one change merges. `evals/` turns the same gates into a score for
+the process that makes changes: ten feature tasks with Gherkin graders, a runner that gives
+each to an agent in a disposable worktree, and a pass rate. `npm run eval:baseline` proves
+the graders discriminate; `npm run eval -- --agent '…'` measures an agent. See
+[evals/README.md](evals/README.md).
+
 ## Working with agents under the harness
 
 - Write the Gherkin scenario first. If you cannot say what "correct" means in a scenario,

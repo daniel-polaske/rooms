@@ -117,3 +117,25 @@ jobs:
           name: mutation-report
           path: reports/mutation/index.html
           if-no-files-found: ignore
+
+  eval-baseline:
+    name: eval graders discriminate
+    # Every grader in evals/ must FAIL on the current tree, and every worktree
+    # must pass its own gates. Weekly and manual; when a task changes, run
+    # `npm run eval:baseline -- --tasks <id>` locally before opening the PR.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: cp .dev.vars.example .dev.vars
+      - run: npm run types
+      - run: npm run eval:baseline
+      - name: Baseline summary
+        if: always()
+        run: cat reports/evals/*/summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
