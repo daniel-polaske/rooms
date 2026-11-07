@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Mutation testing: does the suite notice when the code is wrong? `npm run mutate`. Thresholds are a ratchet (HARNESS.md).",
+  "testRunner": "vitest",
+  "vitest": { "configFile": "vitest.config.ts", "related": false },
+  "mutate": ["src/**/*.ts"],
+  "coverageAnalysis": "perTest",
+  "reporters": ["clear-text", "progress", "html", "json"],
+  "htmlReporter": { "fileName": "reports/mutation/index.html" },
+  "jsonReporter": { "fileName": "reports/mutation/report.json" },
+  "thresholds": { "high": 85, "low": 70, "break": 60 },
+  "incremental": true,
+  "incrementalFile": "reports/mutation/incremental.json",
+  "timeoutMS": 30000,
+  "concurrency": 2,
+  "tempDirName": ".stryker-tmp",
+  "cleanTempDir": true
+}

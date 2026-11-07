@@ -145,7 +145,6 @@ export class RoomDO extends DurableObject<Env> {
         this.ctx.abort("chaos: injected abort");
         break;
       case "cpu": {
-        // eslint-disable-next-line no-constant-condition
         let x = 0;
         while (true) x = (x + 1) | 0;
       }
@@ -228,9 +227,9 @@ export class RoomDO extends DurableObject<Env> {
     try {
       const inst = await this.env.ARCHIVE.create({ id, params: { room: this.name, reason } });
       this.log("room.archive.start", { instance: inst.id, reason, max_seq: st.max_seq });
-    } catch (e: any) {
+    } catch (e) {
       // Already started for this (room, max_seq): fine, idempotent.
-      this.log("room.archive.exists", { instance: id, error: String(e?.message ?? e) });
+      this.log("room.archive.exists", { instance: id, error: String((e as { message?: unknown } | null)?.message ?? e) });
     }
     return id;
   }

@@ -1,0 +1,119 @@
+# The harness. Nothing merges to main unless every job here is green.
+# Turn on "Require status checks to pass" for `gates` and `acceptance` in the
+# branch protection rules; `mutation` is advisory on pull requests and
+# enforced on the weekly run (HARNESS.md).
+name: harness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 9 * * 1" # Monday 09:17 UTC: the full mutation run
+  workflow_dispatch:
+
+concurrency:
+  group: harness-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+  CI: "1"
+
+jobs:
+  gates:
+    name: types, lint, dependency rules, tests + coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # CHAOS_TOKEN is a secret, so it only appears in the generated Env type
+      # when a .dev.vars exists. The example file is enough for type generation.
+      - run: cp .dev.vars.example .dev.vars
+      - run: npm run types
+      - run: npm run check
+      - run: npm run lint
+      - run: npm run depcruise
+      - run: npm run test:coverage
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f coverage/coverage-summary.json ]; then
+            node -e 'const t=require("./coverage/coverage-summary.json").total; console.log(`lines ${t.lines.pct}%  statements ${t.statements.pct}%  branches ${t.branches.pct}%  functions ${t.functions.pct}%`)' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  acceptance:
+    name: acceptance (Gherkin against wrangler dev)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: cp .dev.vars.example .dev.vars
+      - run: npm run types
+      - run: npm run acceptance
+
+  mutation:
+    name: mutation score
+    # Pull requests: incremental, only mutants touched by the diff re-run.
+    # Weekly and manual: the full run, enforced.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: cp .dev.vars.example .dev.vars
+      - run: npm run types
+      - name: Restore the incremental report
+        uses: actions/cache@v4
+        with:
+          path: reports/mutation/incremental.json
+          key: stryker-incremental-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            stryker-incremental-${{ github.ref }}-
+            stryker-incremental-refs/heads/main-
+      - name: Mutation test (incremental on pull requests)
+        # Incremental mode re-runs only the mutants whose code or tests changed
+        # since the cached report; with no cache (first run on a branch) it is
+        # a full run. Weekly and manual runs are always full.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            npx stryker run --incremental --concurrency 4
+          else
+            npx stryker run --force --incremental --concurrency 4
+          fi
+      - name: Mutation summary
+        if: always()
+        run: |
+          if [ -f reports/mutation/report.json ]; then
+            node -e '
+              const r = require("./reports/mutation/report.json");
+              let killed = 0, survived = 0, timeout = 0, nocov = 0;
+              for (const f of Object.values(r.files)) for (const m of f.mutants) {
+                if (m.status === "Killed") killed++; else if (m.status === "Survived") survived++;
+                else if (m.status === "Timeout") timeout++; else if (m.status === "NoCoverage") nocov++;
+              }
+              const score = (100 * (killed + timeout) / (killed + timeout + survived + nocov)).toFixed(2);
+              console.log(`mutation score ${score}%  (killed ${killed}, timeout ${timeout}, survived ${survived}, no coverage ${nocov})`);
+            ' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: reports/mutation/index.html
+          if-no-files-found: ignore
