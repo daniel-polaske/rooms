@@ -44,3 +44,11 @@ returns 403 on WebSocket upgrades and does not pass identity through the static-
 - [ ] saved Workers Logs queries: `event = "room.start"`, `event = "queue.retry"`, `event = "wf.step"`
 - [ ] confirm `trace_id` follows one message Router -> RoomDO -> Queue -> DirectoryDO in the dashboard
 - [ ] enable Workers Traces (check current config key) and compare spans with the hand-carried trace
+- [ ] `curl -s $B/api/rooms/lobby/describe | jq` on the deployed Worker and compare with local:
+      `bookmark` (all zeros under `wrangler dev`; in production a real point in 30 days of history),
+      `tables` (`wrangler dev` adds `__miniflare_do_name`, Miniflare's own note of the name for its
+      local explorer; expect only ours and the platform's `_cf_*` in production) and `name` (in the
+      vitest pool `ctx.id.name` sticks to whatever first created the object, even when it is later
+      reached by `idFromString`; the docs say production follows the caller)
+- [ ] `status()` reads every row for its `COUNT(*)` and runs on every socket open and every alarm:
+      keep a counter in `meta`, or stop counting (describe() shows the one-row way to `max_seq`)

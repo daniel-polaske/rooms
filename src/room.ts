@@ -32,6 +32,8 @@ export class RoomDO extends DurableObject<Env> {
   private sql = this.ctx.storage.sql;
   /** Changes on every construction. Two values in one minute = the object reset. */
   readonly incarnation: string = crypto.randomUUID().slice(0, 8);
+  /** When this incarnation was constructed. The platform keeps no uptime, only incarnations. */
+  private readonly startedAt = Date.now();
   /** Cached only as a convenience; SQLite is the truth. */
   private name = "";
 
@@ -113,7 +115,11 @@ export class RoomDO extends DurableObject<Env> {
       .toArray() as unknown as Message[];
   }
 
-  /** Object-level facts for the troubleshooting playbook. Cheap: 2 rows read. */
+  /**
+   * Object-level facts for the troubleshooting playbook, with the exact message
+   * count. Not cheap: COUNT(*) reads every row (measured in workerd: 120 rows
+   * read for 120 messages). For a view whose cost does not grow, use describe().
+   */
   status() {
     const count = this.sql.exec(`SELECT COUNT(*) AS n, MAX(seq) AS max_seq FROM messages`).one();
     return {
@@ -124,6 +130,55 @@ export class RoomDO extends DurableObject<Env> {
       max_seq: (count.max_seq as number | null) ?? 0,
       sockets: this.ctx.getWebSockets().length,
       db_bytes: this.sql.databaseSize,
+    };
+  }
+
+  /**
+   * The object's own answers about itself, for the price of one row.
+   *
+   *   who am I        id, name, jurisdiction. `name` is the platform's record
+   *                   (ctx.id.name): null unless the object was reached by name.
+   *                   `stored_name` is what the Router told us through setName().
+   *   since when      incarnation, started_at. Both minted in the constructor.
+   *   what do I hold  max_seq, db_bytes, tables, bookmark (the object's position
+   *                   in its own change history; a placeholder under wrangler dev)
+   *   who is here     sockets
+   *   what wakes me   alarm_at
+   *   what it cost    rows_read, taken from the cursors after they are drained
+   *
+   * No COUNT(*): MAX(seq) is one row through the primary key and PRAGMA
+   * table_list reads none, so the cost does not grow with the room. Asking is
+   * still a request: it wakes the object if it was asleep.
+   */
+  async describe() {
+    let rowsRead = 0;
+    const run = (query: string) => {
+      const cursor = this.sql.exec(query);
+      const rows = cursor.toArray();
+      rowsRead += cursor.rowsRead; // final only once the cursor is drained
+      return rows;
+    };
+    const maxSeq = (run(`SELECT MAX(seq) AS max_seq FROM messages`)[0].max_seq as number | null) ?? 0;
+    // Everything in the file, the platform's own tables (_cf_*) included; SQLite's
+    // are not ours to list. Sorted: PRAGMA table_list promises no order.
+    const tables = run(`PRAGMA table_list`)
+      .map((t) => String(t.name))
+      .filter((name) => !name.startsWith("sqlite_"))
+      .sort();
+    return {
+      id: this.ctx.id.toString(),
+      name: this.ctx.id.name ?? null,
+      stored_name: this.name,
+      jurisdiction: this.ctx.id.jurisdiction ?? null,
+      incarnation: this.incarnation,
+      started_at: this.startedAt,
+      max_seq: maxSeq,
+      db_bytes: this.sql.databaseSize,
+      tables,
+      bookmark: await this.ctx.storage.getCurrentBookmark(),
+      alarm_at: await this.ctx.storage.getAlarm(),
+      sockets: this.ctx.getWebSockets().length,
+      rows_read: rowsRead,
     };
   }
 

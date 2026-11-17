@@ -69,6 +69,16 @@ describe("Router", () => {
     expect(await status.json()).toMatchObject({ name: "lobby", messages: 1 });
   });
 
+  it("describes a room through the Router: GET only, and without naming it first", async () => {
+    await call("/api/rooms/descr/messages", json({ msg_id: "d-1", author: "dan", body: "hi" }));
+    const res = await call("/api/rooms/descr/describe");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ name: "descr", stored_name: "descr", max_seq: 1, sockets: 0, rows_read: 1 });
+    // A room nobody has posted to: the platform still knows its name, setName was never called.
+    expect(await (await call("/api/rooms/descr-quiet/describe")).json()).toMatchObject({ name: "descr-quiet", stored_name: "", max_seq: 0 });
+    expect((await call("/api/rooms/descr/describe", { method: "POST" })).status).toBe(404);
+  });
+
   it("mints a msg_id when the client sends none, and defaults the author", async () => {
     const res = await call("/api/rooms/anon/messages", json({ body: "no id" }));
     expect(res.status).toBe(201);
@@ -144,6 +154,7 @@ describe("WebSockets (hibernation API)", () => {
   it("says hello with the incarnation and counts the socket", async () => {
     const ws = await open("ws-hello", "dan");
     expect(await (await call("/api/rooms/ws-hello")).json()).toMatchObject({ sockets: 1 });
+    expect(await (await call("/api/rooms/ws-hello/describe")).json()).toMatchObject({ sockets: 1 });
     ws.close(1000, "done");
   });
 

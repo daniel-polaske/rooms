@@ -43,6 +43,7 @@ In another terminal:
 ```sh
 B=http://localhost:8787
 curl -s $B/api/rooms/lobby | jq                     # status: id, incarnation, counts
+curl -s $B/api/rooms/lobby/describe | jq            # the object on itself: name, tables, alarm, cost (1 row)
 curl -s -XPOST $B/api/rooms/lobby/messages -d '{"author":"dan","body":"hi"}' | jq
 curl -s "$B/api/rooms/lobby/messages?after=0" | jq
 curl -s -XPOST "$B/api/rooms/lobby/chaos?mode=abort" -H 'x-chaos-token: dev'
