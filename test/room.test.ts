@@ -6,7 +6,7 @@
  *   I3  post() is idempotent on msg_id
  */
 import { env } from "cloudflare:workers";
-import { evictDurableObject, runDurableObjectAlarm } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 const room = (name: string) => {
@@ -106,6 +106,17 @@ describe("RoomDO", () => {
     const id = env.ROOM.newUniqueId();
     const d = await env.ROOM.get(id).describe();
     expect(d).toMatchObject({ id: id.toString(), id_name: null, name: "" });
+  });
+
+  it("describe(): a runtime without point-in-time recovery gets a null bookmark, not a failure", async () => {
+    const r = room("describe-no-pitr");
+    expect(typeof (await r.describe()).bookmark).toBe("string"); // workerd has the method
+    // celld 0.6.3 has no getCurrentBookmark(). Take it away from this one object and ask again.
+    const d = await runInDurableObject(r, async (instance, state) => {
+      Object.defineProperty(state.storage, "getCurrentBookmark", { value: undefined, configurable: true });
+      return instance.describe();
+    });
+    expect(d).toMatchObject({ class: "RoomDO", id_name: "describe-no-pitr", bookmark: null });
   });
 
   it("describe(): the cost of asking does not grow with the room", async () => {

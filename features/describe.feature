@@ -27,7 +27,7 @@ Feature: A room can say what it is
     And I describe the room
     And I post 40 messages as "late"
     And I describe the room
-    Then both descriptions cost 1 row read
+    Then both descriptions cost the same rows read
 
   Scenario: a reset changes the incarnation and nothing else about who the room is
     When I post a message with msg_id "keep" and body "durable"

@@ -57,8 +57,9 @@ and watch the event pane: `object RESET: incarnation a -> b`, then `history +N` 
 ## Know thyself
 
 `GET /api/rooms/:name/describe` with header `x-chaos-token` asks the object what it is. The answer
-comes from inside (`describe()` in `src/room.ts`), writes nothing, and reads one row however large
-the room is. The Router does not `setName` first, so asking does not change the answer.
+comes from inside (`describe()` in `src/room.ts`), writes nothing, and costs the same however large
+the room is: one row read on workerd. The Router does not `setName` first, so asking does not change
+the answer.
 
 | field | from | what it tells you |
 | --- | --- | --- |
@@ -68,7 +69,7 @@ the room is. The Router does not `setName` first, so asking does not change the 
 | `incarnation`, `started_at` | minted in the constructor | which life this is; both are new after every reset |
 | `sockets` | `ctx.getWebSockets()` | who is attached |
 | `alarm_at` | `ctx.storage.getAlarm()` | what is scheduled, in ms since the epoch, or `null` |
-| `bookmark` | `ctx.storage.getCurrentBookmark()` | the point in time the database is at |
+| `bookmark` | `ctx.storage.getCurrentBookmark()` | the point in time the database is at; `null` where the runtime has no such method |
 | `db_bytes` | `ctx.storage.sql.databaseSize` | what it owns, in bytes |
 | `max_seq` | `SELECT MAX(seq)` | the last write; one row read |
 | `tables` | `PRAGMA table_list` | every table in this object's file, the runtime's own included; no rows read |
@@ -80,6 +81,11 @@ equals the message count), so poll `describe`, not `status`, on a big room.
 The same facts from outside, locally: the object's database is the file
 `.wrangler/state/v3/do/rooms-RoomDO/<id>.sqlite`. Open it with `sqlite3` and compare `db_bytes`
 with its size and `alarm_at` with row 1 of `_cf_METADATA` (nanoseconds).
+
+On celld 0.6.3 (`celld dev`, after removing the `observability` key it rejects from the config) the
+same call answers with `bookmark: null`, celld's own tables in `tables`, a different `id` for the same
+name, and `rows_read: 13`, still constant as the room grows. The file is
+`.celld/dev/runtime/RoomDO:<id>/ltx/e1/db.sqlite`.
 
 ## Stage 3: alarm -> Workflow -> R2
 

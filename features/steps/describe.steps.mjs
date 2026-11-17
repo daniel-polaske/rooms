@@ -32,10 +32,11 @@ Then("the description has an alarm in the future", function () {
   assert.ok(typeof at === "number" && at > Date.now(), `alarm_at = ${at}`);
 });
 
-Then("both descriptions cost {int} row(s) read", function (n) {
+// The count itself belongs to the runtime (1 on workerd, 13 on celld 0.6.3). The promise is that it does not grow.
+Then("both descriptions cost the same rows read", function () {
   const [first, second] = this.descriptions.slice(-2);
-  assert.equal(first.rows_read, n, `first description: ${JSON.stringify(first)}`);
-  assert.equal(second.rows_read, n, `second description: ${JSON.stringify(second)}`);
+  assert.ok(Number.isInteger(first.rows_read) && first.rows_read >= 0, `rows_read: ${JSON.stringify(first)}`);
+  assert.equal(second.rows_read, first.rows_read, `the cost grew: ${first.rows_read} then ${second.rows_read}`);
   assert.ok(second.max_seq > first.max_seq, "the room did grow between the two descriptions");
 });
 

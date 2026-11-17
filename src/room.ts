@@ -136,12 +136,16 @@ export class RoomDO extends DurableObject<Env> {
   /**
    * Know thyself: who this object is, which life this is, what it owns and what
    * is scheduled, answered from inside at a cost that does not grow with the
-   * room. PRAGMA table_list reads no rows and MAX(seq) reads one; `rows_read`
-   * is the meter, so the claim is checked on every call. Read-only: asking
-   * must not change the answer, which is why the Router does not setName first.
+   * room. On workerd PRAGMA table_list reads no rows and MAX(seq) reads one;
+   * `rows_read` is the meter, so the claim is checked on every call. Read-only:
+   * asking must not change the answer, which is why the Router does not setName
+   * first.
    */
   async describe() {
     const id = this.ctx.id;
+    const storage = this.ctx.storage;
+    // Point-in-time recovery is Cloudflare's. A runtime without it (celld 0.6.3) still gets an answer.
+    const bookmark = typeof storage.getCurrentBookmark === "function" ? await storage.getCurrentBookmark() : null;
     const listed = this.sql.exec(`PRAGMA table_list`);
     const tables = listed.toArray()
       .filter((t) => t.schema === "main")
@@ -156,8 +160,8 @@ export class RoomDO extends DurableObject<Env> {
       incarnation: this.incarnation,
       started_at: this.startedAt,
       sockets: this.ctx.getWebSockets().length,
-      alarm_at: await this.ctx.storage.getAlarm(),
-      bookmark: await this.ctx.storage.getCurrentBookmark(),
+      alarm_at: await storage.getAlarm(),
+      bookmark,
       db_bytes: this.sql.databaseSize,
       max_seq: maxSeq,
       tables,
