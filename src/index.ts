@@ -8,6 +8,7 @@
  * Routes
  *   GET  /api/rooms                         list rooms (DirectoryDO)
  *   GET  /api/rooms/:name                   room status
+ *   GET  /api/rooms/:name/describe          the object's own account of itself (one row read)
  *   GET  /api/rooms/:name/messages?after=N  history
  *   POST /api/rooms/:name/messages          {msg_id?, author, body}
  *   GET  /api/rooms/:name/ws?author=X       WebSocket
@@ -156,6 +157,8 @@ async function routeRoom(ctx: RouteContext, name: string, sub: string | undefine
 
   const handlers: Record<string, () => Promise<Response>> = {
     "GET": async () => { await room.setName(name); return json(await room.status()); },
+    // No setName here: the point is what the object already knows about itself.
+    "GET describe": async () => json(await room.describe()),
     "ws": () => openSocket(ctx, room, name), // any method: the object answers 426 to a non-upgrade
     "GET messages": async () => {
       const after = Number(url.searchParams.get("after") ?? 0);

@@ -108,6 +108,10 @@ Then("the response JSON field {string} is {string}", function (path, s) {
   assert.equal(getPath(this.last.body, path), s, JSON.stringify(this.last.body));
 });
 
+Then("the response JSON field {string} is the room's name", function (path) {
+  assert.equal(getPath(this.last.body, path), this.room, JSON.stringify(this.last.body));
+});
+
 Then("the response JSON field {string} is the boolean {word}", function (path, word) {
   assert.equal(getPath(this.last.body, path), word === "true", JSON.stringify(this.last.body));
 });
@@ -134,6 +138,12 @@ Then("the response JSON array {string} has {int} item(s)", function (path, n) {
   const v = getPath(this.last.body, path);
   assert.ok(Array.isArray(v), `${path} is not an array: ${JSON.stringify(this.last.body)}`);
   assert.equal(v.length, n);
+});
+
+Then("the response JSON array {string} includes {string}", function (path, item) {
+  const v = getPath(this.last.body, path);
+  assert.ok(Array.isArray(v), `${path} is not an array: ${JSON.stringify(this.last.body)}`);
+  assert.ok(v.includes(item), `${path} = ${JSON.stringify(v)}, want it to include ${item}`);
 });
 
 Then("the response body has {int} line(s)", function (n) {

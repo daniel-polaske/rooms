@@ -79,6 +79,66 @@ describe("RoomDO", () => {
     expect(st.incarnation).toMatch(/^[0-9a-f]{8}$/);
   });
 
+  it("describe(): identity comes from the platform, with no setName", async () => {
+    const d = await room("desc-id").describe();
+    expect(d.name).toBe("desc-id"); // ctx.id.name: the Router never had to tell it
+    expect(d.stored_name).toBe(""); // nobody called setName
+    expect(d.id).toBe(env.ROOM.idFromName("desc-id").toString());
+    expect(d.id).toMatch(/^[0-9a-f]{64}$/);
+    expect(d.jurisdiction).toBeNull();
+    expect(d.incarnation).toMatch(/^[0-9a-f]{8}$/);
+    expect(d.started_at).toBeGreaterThan(Date.now() - 60_000);
+    expect(d.started_at).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("describe(): an object reached only by its id string has no name to report", async () => {
+    const anonymous = env.ROOM.get(env.ROOM.idFromString(env.ROOM.idFromName("desc-anon").toString()));
+    const d = await anonymous.describe();
+    expect(d.name).toBeNull();
+    expect(d.id).toBe(env.ROOM.idFromName("desc-anon").toString());
+  });
+
+  it("describe(): what it holds, who is connected, what will wake it", async () => {
+    const r = room("desc-holds");
+    const empty = await r.describe();
+    expect(empty).toMatchObject({ max_seq: 0, alarm_at: null, sockets: 0 });
+    // The first call sees the two tables in creation order reversed; the answer is sorted anyway.
+    expect(empty.tables).toEqual([...empty.tables].sort());
+    expect(empty.tables).toEqual(expect.arrayContaining(["messages", "meta"]));
+    expect(empty.tables.filter((t) => t.startsWith("sqlite_"))).toEqual([]);
+    expect(typeof empty.bookmark).toBe("string");
+
+    const before = Date.now();
+    const { seq } = await r.post("d-1", "dan", "one");
+    await r.post("d-2", "dan", "two");
+    const d = await r.describe();
+    expect(d.max_seq).toBe(seq + 1);
+    expect(d.alarm_at).toBeGreaterThanOrEqual(before + 1000); // IDLE_MS in the test config
+    expect(d.db_bytes).toBeGreaterThan(0);
+    expect(d.db_bytes).toBe((await r.status()).db_bytes);
+  });
+
+  it("describe(): costs one row however long the history", async () => {
+    const r = room("desc-cost");
+    expect((await r.describe()).rows_read).toBe(1);
+    for (let i = 0; i < 60; i++) await r.post(`c-${i}`, "dan", `msg ${i}`);
+    const d = await r.describe();
+    expect(d.max_seq).toBe(60);
+    expect(d.rows_read).toBe(1); // status() reads all 60 for its COUNT(*)
+  });
+
+  it("describe(): a reset mints a new incarnation and start time; what it holds stays", async () => {
+    const r = room("desc-reset");
+    await r.setName("desc-reset");
+    await r.post("keep", "dan", "durable");
+    const before = await r.describe();
+    await evictDurableObject(r);
+    const after = await room("desc-reset").describe();
+    expect(after.incarnation).not.toBe(before.incarnation);
+    expect(after.started_at).toBeGreaterThanOrEqual(before.started_at);
+    expect(after).toMatchObject({ id: before.id, name: "desc-reset", stored_name: "desc-reset", max_seq: before.max_seq, alarm_at: before.alarm_at });
+  });
+
   it("setName is idempotent and survives a reset", async () => {
     const r = room("named");
     await r.setName("named");
