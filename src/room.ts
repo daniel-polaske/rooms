@@ -32,6 +32,8 @@ export class RoomDO extends DurableObject<Env> {
   private sql = this.ctx.storage.sql;
   /** Changes on every construction. Two values in one minute = the object reset. */
   readonly incarnation: string = crypto.randomUUID().slice(0, 8);
+  /** When this incarnation was constructed. Lost on every reset, like the incarnation. */
+  private readonly startedAt = Date.now();
   /** Cached only as a convenience; SQLite is the truth. */
   private name = "";
 
@@ -113,7 +115,11 @@ export class RoomDO extends DurableObject<Env> {
       .toArray() as unknown as Message[];
   }
 
-  /** Object-level facts for the troubleshooting playbook. Cheap: 2 rows read. */
+  /**
+   * Object-level facts for the troubleshooting playbook. COUNT(*) reads one row
+   * per message (measured: rowsRead = n), so this is not free on a big room.
+   * describe() is the constant-cost view.
+   */
   status() {
     const count = this.sql.exec(`SELECT COUNT(*) AS n, MAX(seq) AS max_seq FROM messages`).one();
     return {
@@ -124,6 +130,38 @@ export class RoomDO extends DurableObject<Env> {
       max_seq: (count.max_seq as number | null) ?? 0,
       sockets: this.ctx.getWebSockets().length,
       db_bytes: this.sql.databaseSize,
+    };
+  }
+
+  /**
+   * Know thyself: who this object is, which life this is, what it owns and what
+   * is scheduled, answered from inside at a cost that does not grow with the
+   * room. PRAGMA table_list reads no rows and MAX(seq) reads one; `rows_read`
+   * is the meter, so the claim is checked on every call. Read-only: asking
+   * must not change the answer, which is why the Router does not setName first.
+   */
+  async describe() {
+    const id = this.ctx.id;
+    const listed = this.sql.exec(`PRAGMA table_list`);
+    const tables = listed.toArray()
+      .filter((t) => t.schema === "main")
+      .map((t) => ({ name: t.name as string, columns: t.ncol as number }));
+    const last = this.sql.exec(`SELECT MAX(seq) AS max_seq FROM messages`);
+    const maxSeq = (last.one().max_seq as number | null) ?? 0;
+    return {
+      class: "RoomDO",
+      id: id.toString(),
+      id_name: id.name ?? null, // the name the caller addressed; absent for ids not made from a name
+      name: this.name, // the name `meta` remembers
+      incarnation: this.incarnation,
+      started_at: this.startedAt,
+      sockets: this.ctx.getWebSockets().length,
+      alarm_at: await this.ctx.storage.getAlarm(),
+      bookmark: await this.ctx.storage.getCurrentBookmark(),
+      db_bytes: this.sql.databaseSize,
+      max_seq: maxSeq,
+      tables,
+      rows_read: listed.rowsRead + last.rowsRead,
     };
   }
 

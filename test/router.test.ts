@@ -89,6 +89,20 @@ describe("Router", () => {
     expect((await call("/api/rooms/lobby/chaos?mode=bogus", { method: "POST", headers: TOKEN })).status).toBe(400);
   });
 
+  it("describe is an operator endpoint: the token gates it, and asking does not name the room", async () => {
+    expect((await call("/api/rooms/desc/describe")).status).toBe(403);
+    expect((await call("/api/rooms/desc/describe", { headers: { "x-chaos-token": "wrong" } })).status).toBe(403);
+    const res = await call("/api/rooms/desc/describe", { headers: TOKEN });
+    expect(res.status).toBe(200);
+    const d = (await res.json()) as { class: string; id: string; id_name: string; name: string; rows_read: number };
+    expect(d).toMatchObject({ class: "RoomDO", id_name: "desc", name: "" }); // addressed as "desc", never told its name
+    expect(d.id).toMatch(/^[0-9a-f]{64}$/);
+    // The status route does name it; describe then reports both names, and they agree.
+    await call("/api/rooms/desc");
+    expect(await (await call("/api/rooms/desc/describe", { headers: TOKEN })).json()).toMatchObject({ id: d.id, id_name: "desc", name: "desc" });
+    expect((await call("/api/rooms/desc/describe", { method: "POST", headers: TOKEN })).status).toBe(404); // GET only
+  });
+
   it("chaos=throw surfaces as a 500 with the trace id; the room keeps its incarnation", async () => {
     const before = ((await (await call("/api/rooms/throwy")).json()) as { incarnation: string }).incarnation;
     const res = await call("/api/rooms/throwy/chaos?mode=throw", { method: "POST", headers: TOKEN });
