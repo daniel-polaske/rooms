@@ -8,6 +8,7 @@
  * Routes
  *   GET  /api/rooms                         list rooms (DirectoryDO)
  *   GET  /api/rooms/:name                   room status
+ *   GET  /api/rooms/:name/describe          what the object knows about itself (X-Chaos-Token)
  *   GET  /api/rooms/:name/messages?after=N  history
  *   POST /api/rooms/:name/messages          {msg_id?, author, body}
  *   GET  /api/rooms/:name/ws?author=X       WebSocket
@@ -156,6 +157,7 @@ async function routeRoom(ctx: RouteContext, name: string, sub: string | undefine
 
   const handlers: Record<string, () => Promise<Response>> = {
     "GET": async () => { await room.setName(name); return json(await room.status()); },
+    "GET describe": async () => requireToken(ctx) ?? json(await room.describe()), // no setName: asking must not change the answer
     "ws": () => openSocket(ctx, room, name), // any method: the object answers 426 to a non-upgrade
     "GET messages": async () => {
       const after = Number(url.searchParams.get("after") ?? 0);
@@ -197,7 +199,7 @@ async function postMessage(ctx: RouteContext, room: RoomStub, name: string): Pro
   return json({ ...r, msg_id: msgId }, r.duplicate ? 200 : 201);
 }
 
-/** The fault-injection and archive endpoints share one secret. Returns the 403, or null to proceed. */
+/** The operator endpoints (fault injection, archive, describe) share one secret. Returns the 403, or null to proceed. */
 function requireToken({ request, env }: RouteContext): Response | null {
   const token = request.headers.get("x-chaos-token");
   if (!env.CHAOS_TOKEN || token !== env.CHAOS_TOKEN) return json({ error: "forbidden" }, 403);
